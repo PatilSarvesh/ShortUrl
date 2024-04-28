@@ -1,4 +1,9 @@
 
+using Carter;
+using ShortUrl.Factories;
+using ShortUrl.Models;
+using ShortUrl.Services;
+
 namespace ShortUrl
 {
     public class Program
@@ -12,6 +17,30 @@ namespace ShortUrl
             // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
+            builder.Services.AddCarter();
+
+            //DB Service
+            builder.Services.Configure<DatabaseSettings>
+            (
+                builder.Configuration.GetSection("DatabaseSettings")
+            );
+
+            builder.Services.Configure<DbCollections>(
+                builder.Configuration.GetSection("DBCollections")
+            );
+
+
+            // Add CORS services
+            builder.Services.AddCors(options =>
+                {
+                    options.AddPolicy("CorsPolicy",
+                        builder => builder.AllowAnyOrigin()
+                            .AllowAnyMethod()
+                            .AllowAnyHeader());
+                });
+
+            builder.Services.AddScoped<IUrlService, UrlService>();
+            builder.Services.AddScoped<IUrlFactory, UrlFactory>();
 
             var app = builder.Build();
 
@@ -22,11 +51,11 @@ namespace ShortUrl
                 app.UseSwaggerUI();
             }
 
+            app.UseCors("CorsPolicy");
+
             app.UseHttpsRedirection();
-            
-            app.MapGet("/ShortUrl/Url", async() =>{
-                return Results.Ok("Hi");
-            });
+
+            app.MapCarter();
 
             app.Run();
 
