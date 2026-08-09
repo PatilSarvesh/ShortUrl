@@ -7,31 +7,45 @@ namespace ShortUrl.Services
     public class UrlService : IUrlService
     {
         private readonly IMongoCollection<UrlManagement> _urlCollection;
-        private readonly IMongoDatabase _mongoDatabase;
 
-        public UrlService(IOptions<DatabaseSettings> dbSettings, IOptions<DbCollections> options)
+        public UrlService(IMongoClient mongoClient, IOptions<DatabaseSettings> dbSettings, IOptions<DbCollections> options)
         {
-            var mongoClient = new MongoClient(dbSettings.Value.ConnectionString);
-            _mongoDatabase = mongoClient.GetDatabase(dbSettings.Value.DatabaseName);
-            _urlCollection = _mongoDatabase.GetCollection<UrlManagement>(options.Value.UrlCollection);
+            var mongoDatabase = mongoClient.GetDatabase(dbSettings.Value.DatabaseName);
+            _urlCollection = mongoDatabase.GetCollection<UrlManagement>(options.Value.UrlCollection);
         }
 
-        public async Task SaveShortUrl(UrlManagement url)
+        public async Task<bool> TrySaveShortUrl(UrlManagement url, CancellationToken cancellationToken = default)
         {
-            await _urlCollection.InsertOneAsync(url);
+            try
+            {
+                await _urlCollection.InsertOneAsync(url, cancellationToken: cancellationToken);
+                return true;
+            }
+            catch (MongoWriteException exception)
+                when (exception.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+            {
+                return false;
+            }
         }
 
-        public async Task<UrlManagement> GetUrlByShortCode(string shortCode)
+        public async Task<UrlManagement?> GetUrlByShortCode(string shortCode, CancellationToken cancellationToken = default)
         {
-            var codeExist = await _urlCollection.Find(u => u.ShortCode == shortCode).FirstOrDefaultAsync();
-            return codeExist ?? null;
+            return await _urlCollection
+                .Find(u => u.ShortCode == shortCode)
+                .FirstOrDefaultAsync(cancellationToken);
         }
 
-        public async Task<UrlManagement> GetDestinationUrl(string shortUrl)
+        public async Task RecordClick(string shortCode, CancellationToken cancellationToken = default)
         {
-            var url = await _urlCollection.Find(u => u.ShortUrl == shortUrl).FirstOrDefaultAsync();
-            return url ?? null;
+            var update = Builders<UrlManagement>.Update
+                .Inc(url => url.ClickCount, 1)
+                .Set(url => url.LastAccessedOn, DateTime.UtcNow);
+
+            await _urlCollection.UpdateOneAsync(
+                url => url.ShortCode == shortCode,
+                update,
+                cancellationToken: cancellationToken);
         }
 
-     }
+    }
 }

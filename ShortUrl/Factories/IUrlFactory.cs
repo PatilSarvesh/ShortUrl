@@ -1,9 +1,21 @@
+using ShortUrl.Models;
+
 namespace ShortUrl.Factories
 {
     public interface IUrlFactory
     {
-        public Task<string> GenerateShortenUrlAsync(string destinationUrl);
-        public Task<string> GetDestinationUrl(string shortUrl);
-    }
+        Task<ShortenUrlResponse> GenerateShortenUrlAsync(
+            string destinationUrl,
+            string? customCode,
+            int? expirationHours,
+            CancellationToken cancellationToken = default);
 
+        Task<UrlResolution> GetDestinationUrl(
+            string shortCode,
+            CancellationToken cancellationToken = default);
+
+        Task<ShortUrlStatsResponse?> GetStatsAsync(
+            string shortCode,
+            CancellationToken cancellationToken = default);
+    }
 }

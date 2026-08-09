@@ -1,8 +1,8 @@
 namespace ShortUrl.Models
 {
-    public class DbCollections
+    public sealed class DbCollections
     {
-        public string? UrlCollection { get; set; }
+        public string UrlCollection { get; set; } = string.Empty;
     }
 
 }

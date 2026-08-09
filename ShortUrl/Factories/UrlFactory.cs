@@ -1,65 +1,129 @@
+using System.Security.Cryptography;
+using Microsoft.Extensions.Options;
 using ShortUrl.Common;
 using ShortUrl.Models;
 using ShortUrl.Services;
 
 namespace ShortUrl.Factories
 {
-    public class UrlFactory : IUrlFactory
+    public sealed class UrlFactory : IUrlFactory
     {
+        private const int MaxInsertAttempts = 10;
         private readonly IUrlService _urlService;
-        private readonly Random _random = new();
-        public UrlFactory(IUrlService urlService)
+        private readonly string _baseUrl;
+
+        public UrlFactory(IUrlService urlService, IOptions<UrlSettings> urlSettings)
         {
             _urlService = urlService;
+            _baseUrl = urlSettings.Value.BaseUrl.TrimEnd('/') + "/";
         }
 
-        public async Task<string> GenerateShortenUrlAsync(string destinationUrl)
+        public async Task<ShortenUrlResponse> GenerateShortenUrlAsync(
+            string destinationUrl,
+            string? customCode,
+            int? expirationHours,
+            CancellationToken cancellationToken = default)
         {
-            var shortCode = await GeneratShortCode(destinationUrl);
+            DateTime? expiresAt = expirationHours.HasValue
+                ? DateTime.UtcNow.AddHours(expirationHours.Value)
+                : null;
 
-            var url = new UrlManagement()
+            if (!string.IsNullOrWhiteSpace(customCode))
             {
-                DestinationUrl = destinationUrl,
-                ShortCode = shortCode,
-                ShortUrl = Constants.Url.BaseUrl + shortCode,
-                CreatedOn = DateTime.UtcNow
-            };
-
-            await _urlService.SaveShortUrl(url);
-
-            return url.ShortUrl;
-        }
-
-        private async Task<string> GeneratShortCode(string url)
-        {
-            var codeChars = new Char[Constants.Encreption.ShortUrlLength];
-
-            while (true)
-            {
-                for (int i = 0; i < Constants.Encreption.ShortUrlLength; i++)
+                var customUrl = CreateUrl(destinationUrl, customCode.Trim(), expiresAt);
+                if (!await _urlService.TrySaveShortUrl(customUrl, cancellationToken))
                 {
-                    var randomIndex = _random.Next(Constants.Encreption.Charaters.Length - 1);
-                    codeChars[i] = Constants.Encreption.Charaters[randomIndex];
+                    throw new ShortCodeAlreadyExistsException(customCode);
                 }
-                var code = new string(codeChars);
 
-                var codeExist = await _urlService.GetUrlByShortCode(code);
+                return ToResponse(customUrl);
+            }
 
-                if (codeExist == null)
+            for (var attempt = 1; attempt <= MaxInsertAttempts; attempt++)
+            {
+                var url = CreateUrl(destinationUrl, GenerateShortCode(), expiresAt);
+                if (await _urlService.TrySaveShortUrl(url, cancellationToken))
                 {
-                    return code;
+                    return ToResponse(url);
                 }
             }
 
-
+            throw new InvalidOperationException("Could not generate a unique short URL.");
         }
 
-        public async Task<string> GetDestinationUrl(string shortUrl)
+        private UrlManagement CreateUrl(string destinationUrl, string shortCode, DateTime? expiresAt)
         {
-            var url = await _urlService.GetUrlByShortCode(shortUrl);
+            return new UrlManagement
+            {
+                DestinationUrl = destinationUrl,
+                ShortCode = shortCode,
+                ShortUrl = _baseUrl + shortCode,
+                CreatedOn = DateTime.UtcNow,
+                ExpiresAt = expiresAt
+            };
+        }
 
-            return url == null ? throw new Exception("Url Not Found") : url.DestinationUrl;
+        private static string GenerateShortCode()
+        {
+            var codeChars = new char[Constants.ShortCode.Length];
+            for (var i = 0; i < codeChars.Length; i++)
+            {
+                var randomIndex = RandomNumberGenerator.GetInt32(Constants.ShortCode.Characters.Length);
+                codeChars[i] = Constants.ShortCode.Characters[randomIndex];
+            }
+
+            return new string(codeChars);
+        }
+
+        public async Task<UrlResolution> GetDestinationUrl(
+            string shortCode,
+            CancellationToken cancellationToken = default)
+        {
+            var url = await _urlService.GetUrlByShortCode(shortCode, cancellationToken);
+            if (url is null)
+            {
+                return new UrlResolution(null, false);
+            }
+
+            if (url.ExpiresAt.HasValue && url.ExpiresAt.Value <= DateTime.UtcNow)
+            {
+                return new UrlResolution(null, true);
+            }
+
+            await _urlService.RecordClick(shortCode, cancellationToken);
+            return new UrlResolution(url.DestinationUrl, false);
+        }
+
+        public async Task<ShortUrlStatsResponse?> GetStatsAsync(
+            string shortCode,
+            CancellationToken cancellationToken = default)
+        {
+            var url = await _urlService.GetUrlByShortCode(shortCode, cancellationToken);
+            if (url is null)
+            {
+                return null;
+            }
+
+            return new ShortUrlStatsResponse(
+                url.ShortUrl,
+                url.ShortCode,
+                url.DestinationUrl,
+                url.CreatedOn,
+                url.ExpiresAt,
+                url.ClickCount,
+                url.LastAccessedOn,
+                url.ExpiresAt.HasValue && url.ExpiresAt.Value <= DateTime.UtcNow);
+        }
+
+        private static ShortenUrlResponse ToResponse(UrlManagement url)
+        {
+            return new ShortenUrlResponse(
+                url.ShortUrl,
+                url.ShortCode,
+                url.DestinationUrl,
+                url.CreatedOn,
+                url.ExpiresAt,
+                url.ClickCount);
         }
     }
-
 }
